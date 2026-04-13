@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>AI短视频脚本生成器</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+
+    body {
+      background: #f5f7fa;
+      padding: 20px;
+      max-width: 600px;
+      margin: 0 auto;
+    }
+
+    .card {
+      background: white;
+      border-radius: 16px;
+      padding: 24px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+      margin-bottom: 20px;
+    }
+
+    h1 {
+      font-size: 22px;
+      margin-bottom: 20px;
+      color: #1d2129;
+      text-align: center;
+    }
+
+    .form-item {
+      margin-bottom: 16px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 8px;
+      font-weight: 500;
+      color: #333;
+    }
+
+    input, select, textarea {
+      width: 100%;
+      padding: 12px 14px;
+      border: 1px solid #e5e6eb;
+      border-radius: 8px;
+      font-size: 15px;
+      outline: none;
+    }
+
+    input:focus, select:focus, textarea:focus {
+      border-color: #5677fc;
+    }
+
+    .btn-generate {
+      width: 100%;
+      padding: 14px;
+      background: #5677fc;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: bold;
+      cursor: pointer;
+      margin-top: 10px;
+    }
+
+    .btn-generate:disabled {
+      background: #c5cdfc;
+      cursor: not-allowed;
+    }
+
+    .result {
+      white-space: pre-line;
+      line-height: 1.7;
+      font-size: 15px;
+    }
+
+    .copy-btn {
+      margin-top: 12px;
+      padding: 8px 16px;
+      background: #f5f7fa;
+      border: 1px solid #e5e6eb;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    .tip {
+      font-size: 12px;
+      color: #999;
+      margin-top: 12px;
+      text-align: center;
+    }
+
+    .loading {
+      text-align: center;
+      padding: 20px;
+      color: #5677fc;
+    }
+
+    .streaming-text {
+      position: relative;
+    }
+
+    .streaming-text::after {
+      content: '▊';
+      animation: blink 1s infinite;
+      color: #5677fc;
+    }
+
+    @keyframes blink {
+      0%, 50% { opacity: 1; }
+      51%, 100% { opacity: 0; }
+    }
+
+    /* ── 语音输入区域 ──────────────────────────────────────────── */
+    .voice-section {
+      margin-bottom: 20px;
+    }
+
+    .voice-section-title {
+      font-size: 13px;
+      color: #999;
+      text-align: center;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .voice-section-title::before,
+    .voice-section-title::after {
+      content: "";
+      flex: 1;
+      height: 1px;
+      background: #e5e6eb;
+    }
+
+    .voice-controls {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .mic-btn {
+      width: 72px;
+      height: 72px;
+      border-radius: 50%;
+      border: none;
+      background: #5677fc;
+      color: white;
+      font-size: 28px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 16px rgba(86, 119, 252, 0.35);
+      transition: transform 0.15s, background 0.15s, box-shadow 0.15s;
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: none;
+    }
+
+    .mic-btn:hover {
+      background: #3a5cf0;
+    }
+
+    .mic-btn.recording {
+      background: #ff4757;
+      box-shadow: 0 4px 24px rgba(255, 71, 87, 0.45);
+      animation: pulse 1s infinite;
+    }
+
+    .mic-btn:disabled {
+      background: #c5cdfc;
+      cursor: not-allowed;
+      box-shadow: none;
+      animation: none;
+    }
+
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); }
+      50%       { transform: scale(1.08); }
+    }
+
+    .voice-status {
+      font-size: 13px;
+      color: #999;
+      min-height: 20px;
+    }
+
+    .voice-status.active {
+      color: #5677fc;
+      font-weight: 500;
+    }
+
+    .voice-status.recording {
+      color: #ff4757;
+      font-weight: 500;
+    }
+
+    .voice-status.error {
+      color: #ff4757;
+    }
+    .voice-text-box {
+      width: 100%;
+      min-height: 56px;
+      background: #f5f7fa;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 14px;
+      line-height: 1.6;
+      color: #1d2129;
+      word-break: break-all;
+      display: none;
+      border: 1px solid #e5e6eb;
+    }
+
+    .voice-text-box .interim {
+      color: #aaa;
+      font-style: italic;
+    }
+
+    .voice-tip {
+      font-size: 12px;
+      color: #bbb;
+      text-align: center;
+    }
+
+    .field-highlight {
+      animation: highlight-fade 1.2s ease-out;
+    }
+
+    @keyframes highlight-fade {
+      0%   { background: #dce8ff; border-color: #5677fc; }
+      100% { background: white;   border-color: #e5e6eb; }
+    }
+
+    .voice-ask-box {
+      width: 100%;
+      background: #fff8e1;
+      border: 1px solid #ffd54f;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 14px;
+      color: #795548;
+      line-height: 1.6;
+      display: none;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="card">
+    <h1>AI短视频脚本生成器</h1>
+
+    <!-- ── 语音输入区域（任务 10）───────────────────────────────── -->
+    <div class="voice-section">
+      <div class="voice-section-title">🎙️ 语音输入（可选）</div>
+      <div class="voice-controls">
+        <button class="mic-btn" id="micBtn" title="按住说话">🎙️</button>
+        <div class="voice-status" id="voiceStatus">按住麦克风开始说话</div>
+        <div class="voice-text-box" id="voiceTextBox"></div>
+        <div class="voice-ask-box" id="voiceAskBox"></div>
+        <div class="voice-tip">例如："帮我做一个30秒的护肤干货视频"</div>
+      </div>
+    </div>
+
+    <div class="form-item">
+      <label>视频主题</label>
+      <input type="text" id="theme" placeholder="例如：如何做自媒体、新手养猫、职场沟通技巧" />
+    </div>
+
+    <div class="form-item">
+      <label>视频时长</label>
+      <select id="duration">
+        <option value="15秒">15秒</option>
+        <option value="30秒" selected>30秒</option>
+        <option value="60秒">60秒</option>
+      </select>
+    </div>
+
+    <div class="form-item">
+      <label>文案风格</label>
+      <select id="style">
+        <option value="干货">干货</option>
+        <option value="情感">情感</option>
+        <option value="搞笑">搞笑</option>
+        <option value="带货">带货</option>
+        <option value="探店">探店</option>
+      </select>
+    </div>
+
+    <button class="btn-generate" id="generateBtn">立即生成脚本</button>
+
+    <div class="tip">免费用户每日可生成2次</div>
+  </div>
+
+  <div class="card" id="resultCard" style="display: none;">
+    <div id="loading" class="loading" style="display: none;">正在生成中，请稍候...</div>
+    <div id="resultContent" class="result"></div>
+    <button class="copy-btn" id="copyBtn">复制全部内容</button>
+  </div>
+
+  <script>
+    const generateBtn = document.getElementById('generateBtn');
+    const resultCard = document.getElementById('resultCard');
+    const resultContent = document.getElementById('resultContent');
+    const loading = document.getElementById('loading');
+    const copyBtn = document.getElementById('copyBtn');
+
+    let currentEventSource = null; // 用于管理 SSE 连接
+
+    generateBtn.addEventListener('click', async () => {
+      const theme = document.getElementById('theme').value.trim();
+      const duration = document.getElementById('duration').value;
+      const style = document.getElementById('style').value;
+
+      if (!theme) {
+        alert('请输入视频主题');
+        return;
+      }
+
+      // 关闭之前的 SSE 连接（如果有）
+      if (currentEventSource) {
+        currentEventSource.close();
+        currentEventSource = null;
+      }
+
+      resultCard.style.display = 'block';
+      resultContent.style.display = 'block';
+      loading.style.display = 'block';
+      resultContent.innerHTML = '<div class="streaming-text">正在生成中，请稍候...</div>';
+      generateBtn.disabled = true;
+
+      // 使用流式输出接口
+      const apiUrl = 'http://127.0.0.1:5000/api/generate/stream';
+
+      try {
+        // 使用 fetch + ReadableStream 接收 SSE 数据
+        const response = await fetch(apiUrl, {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            // 注意：如果需要鉴权，在这里添加 Authorization header
+            // 'Authorization': 'Bearer YOUR_TOKEN'
+          },
+          body: JSON.stringify({ theme, duration, style })
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let fullText = '';
+        let isStreaming = true;
+
+        loading.style.display = 'none';
+        resultContent.classList.add('streaming-text');
+
+        while (isStreaming) {
+          const { done, value } = await reader.read();
+          
+          if (done) {
+            isStreaming = false;
+            break;
+          }
+          // 解码数据块
+          buffer += decoder.decode(value, { stream: true });
+          
+          // 解析 SSE 事件
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || ''; // 保留最后一个不完整的行
+          
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                
+                // 检查是否完成
+                if (data.done) {
+                  isStreaming = false;
+                  break;
+                }
+                
+                // 检查是否有错误
+                if (data.error) {
+                  resultContent.innerText = `生成失败：${data.error}`;
+                  isStreaming = false;
+                  break;
+                }
+                
+                // 累积文本
+                if (data.text) {
+                  fullText += data.text;
+                  // 尝试解析并格式化显示
+                  displayFormattedText(fullText);
+                }
+              } catch (e) {
+                // 忽略解析错误（可能是不完整的 JSON）
+                console.warn('SSE parse error:', e);
+              }
+            }
+          }
+        }
+
+        // 流式传输完成，移除光标动画
+        resultContent.classList.remove('streaming-text');
+        
+        // 尝试格式化最终结果
+        try {
+          const parsed = JSON.parse(fullText);
+          resultContent.innerText = formatStructuredResult(parsed);
+        } catch (e) {
+          resultContent.innerText = fullText;
+        }
+
+      } catch (err) {
+        resultContent.innerText = `请求失败：${err.message}`;
+        resultContent.classList.remove('streaming-text');
+      } finally {
+        loading.style.display = 'none';
+        generateBtn.disabled = false;
+      }
+    });
+
+    // 显示格式化文本
+    function displayFormattedText(text) {
+      try {
+        // 尝试解析完整 JSON
+        const parsed = JSON.parse(text);
+        resultContent.innerText = formatStructuredResult(parsed);
+      } catch (e) {
+        // JSON 不完整，显示等待信息
+        resultContent.innerText = '正在生成脚本，请稍候...';
+      }
+    }
+
+    // 格式化结构化结果（JSON 解析后）
+    function formatStructuredResult(data) {
+      let result = '';
+      
+      if (data.script) {
+        result += `【口播脚本】\n${data.script}\n\n`;
+      }
+      
+      if (data.titles && Array.isArray(data.titles)) {
+        result += `【爆款标题】\n`;
+        data.titles.forEach((t, i) => {
+          result += `${i+1}. ${t}\n`;
+        });
+        result += '\n';
+      }
+      
+      if (data.tags && Array.isArray(data.tags)) {
+        result += `【热门标签】\n${data.tags.join('、')}`;
+      }
+      
+      return result.trim();
+    }
+
+    copyBtn.addEventListener('click', () => {
+      const text = resultContent.innerText;
+      navigator.clipboard.writeText(text).then(() => {
+        alert('复制成功！');
+      });
+    });
+    // ══════════════════════════════════════════════════════════════════
+    // 语音输入功能（任务 11-16）
+    // ══════════════════════════════════════════════════════════════════
+
+    const micBtn        = document.getElementById('micBtn');
+    const voiceStatus   = document.getElementById('voiceStatus');
+    const voiceTextBox  = document.getElementById('voiceTextBox');
+    const voiceAskBox   = document.getElementById('voiceAskBox');
+
+    // WebSocket 协议根据当前页面协议自动选择
+    const WS_PROTOCOL = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ASR_WS_URL  = `${WS_PROTOCOL}//${location.host}/ws/asr`;
+
+    // ── 状态管理 ────────────────────────────────────────────────────
+    let mediaRecorder   = null;   // MediaRecorder 实例
+    let asrWs           = null;   // WebSocket 实例
+    let isRecording     = false;  // 是否正在录音
+    let finalText       = '';     // 已确认的最终识别文字（多句拼接）
+    let interimText     = '';     // 当前中间识别结果（灰色斜体）
+    let historyText     = '';     // 追问场景下的历史对话文本
+    let isInAskMode     = false;  // 是否处于追问等待状态
+    let micStream       = null;   // MediaStream 实例，用于后续释放
+
+    // ── 工具函数 ────────────────────────────────────────────────────
+    function setVoiceStatus(msg, cls) {
+      voiceStatus.textContent = msg;
+      voiceStatus.className = 'voice-status' + (cls ? ' ' + cls : '');
+    }
+
+    function renderVoiceText() {
+      voiceTextBox.style.display = finalText || interimText ? 'block' : 'none';
+      let html = '';
+      if (finalText) {
+        html += `<span>${escapeHtml(finalText)}</span>`;
+      }
+      if (interimText) {
+        html += `<span class="interim">${escapeHtml(interimText)}</span>`;
+      }
+      voiceTextBox.innerHTML = html || '';
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    // ── 任务 11：申请麦克风 + 创建 MediaRecorder ────────────────────
+    async function getMicRecorder() {
+      // 优先尝试 16kHz 单声道 PCM
+      const constraints = {
+        audio: {
+          sampleRate: { ideal: 16000 },
+          channelCount: { ideal: 1 },
+          echoCancellation: true,
+          noiseSuppression: true,
+        }
+      };
+
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+      } catch (err) {
+        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+          setVoiceStatus('⚠️ 麦克风权限被拒绝，请在浏览器设置中允许', 'error');
+        } else if (err.name === 'NotFoundError') {
+          setVoiceStatus('⚠️ 未检测到麦克风设备', 'error');
+        } else {
+          setVoiceStatus(`⚠️ 麦克风初始化失败：${err.message}`, 'error');
+        }
+        return null;
+      }
+
+      micStream = stream;
+
+      // 选择最佳 MIME 类型
+      // 注：浏览器通常不支持直接录制 PCM；后端接收 webm/ogg 后火山 ASR 可能无法直接处理，
+      // 实际生产需在后端做格式转换。此处使用浏览器支持的最佳格式，并在协议中标注。
+      const mimeTypes = [
+        'audio/webm;codecs=opus',
+        'audio/ogg;codecs=opus',
+        'audio/webm',
+        'audio/ogg',
+      ];
+      let chosenMime = '';
+      for (const mime of mimeTypes) {
+        if (MediaRecorder.isTypeSupported(mime)) {
+          chosenMime = mime;
+          break;
+        }
+      }
+      const options = chosenMime ? { mimeType: chosenMime } : {};
+      try {
+        return new MediaRecorder(stream, options);
+      } catch (e) {
+        return new MediaRecorder(stream);
+      }
+    }
+
+    // ── 任务 12：建立 WebSocket 并开始发送音频 ──────────────────────
+    function startRecording(recorder) {
+      // 建立 WebSocket
+      asrWs = new WebSocket(ASR_WS_URL);
+      asrWs.binaryType = 'arraybuffer';
+
+      asrWs.onopen = () => {
+        setVoiceStatus('🔴 录音中...', 'recording');
+        // WebSocket 打开后才开始 MediaRecorder
+        recorder.start(100); // 每 100ms 触发一次 ondataavailable
+      };
+
+      asrWs.onerror = (evt) => {
+        console.error('[ASR WS] 错误', evt);
+        setVoiceStatus('⚠️ 语音服务连接失败，请重试', 'error');
+        stopRecording(false);
+      };
+
+      asrWs.onclose = () => {
+        console.log('[ASR WS] 连接关闭');
+      };
+
+      // ── 任务 13：接收识别文字并渲染 ─────────────────────────────
+      asrWs.onmessage = (evt) => {
+        let data;
+        try {
+          data = JSON.parse(evt.data);
+        } catch (e) {
+          console.warn('[ASR WS] 非 JSON 消息', evt.data);
+          return;
+        }
+
+        if (data.error) {
+          setVoiceStatus(`⚠️ ${data.error}`, 'error');
+          return;
+        }
+
+        if (data.text !== undefined) {
+          if (data.is_final) {
+            // 最终结果：追加到 finalText，清空 interim
+            if (data.text) {
+              finalText += data.text;
+            }
+            interimText = '';
+          } else {
+            // 中间结果：只替换 interimText
+            interimText = data.text || '';
+          }
+          renderVoiceText();
+        }
+      };
+
+      // ── 任务 12（续）：发送音频分片 ──────────────────────────────
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0 && asrWs && asrWs.readyState === WebSocket.OPEN) {
+          e.data.arrayBuffer().then(buf => {
+            if (asrWs && asrWs.readyState === WebSocket.OPEN) {
+              asrWs.send(buf);
+            }
+          });
+        }
+      };
+
+      recorder.onstop = () => {
+        // 通知后端音频结束
+        if (asrWs && asrWs.readyState === WebSocket.OPEN) {
+          asrWs.send('END');
+        }
+        setVoiceStatus('🔍 识别中...', 'active');
+        // 等待最终识别结果返回后调用 parse（延迟 1.5s 保证最后一帧处理完）
+        setTimeout(() => {
+          triggerVoiceParse();
+        }, 1500);
+      };
+    }
+
+    // ── 停止录音 ────────────────────────────────────────────────────
+    function stopRecording(notifyEnd = true) {
+      isRecording = false;
+      micBtn.classList.remove('recording');
+      micBtn.disabled = false;
+
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        try { mediaRecorder.stop(); } catch (e) { /* ignore */ }
+      }
+      // 释放麦克风
+      if (micStream) {
+        micStream.getTracks().forEach(t => t.stop());
+        micStream = null;
+      }
+    }
+    // ── 任务 14：识别结束后调用 /api/voice/parse 自动填表 ───────────
+    async function triggerVoiceParse() {
+      const fullInput = isInAskMode
+        ? (historyText + ' ' + finalText).trim()
+        : finalText.trim();
+
+      if (!fullInput) {
+        setVoiceStatus('未识别到语音内容，请重试', 'error');
+        return;
+      }
+
+      setVoiceStatus('🤖 解析中...', 'active');
+
+      let result;
+      try {
+        const resp = await fetch('/api/voice/parse', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: fullInput }),
+        });
+        result = await resp.json();
+      } catch (err) {
+        setVoiceStatus(`⚠️ 解析请求失败：${err.message}`, 'error');
+        return;
+      }
+
+      if (result.status === 'ok') {
+        // ── 任务 14：自动填表 ──────────────────────────────────────
+        isInAskMode = false;
+        historyText = '';
+        voiceAskBox.style.display = 'none';
+
+        fillForm(result);
+        setVoiceStatus('✅ 已自动填写表单', 'active');
+
+        // ── 任务 15：短暂延迟后触发生成 ───────────────────────────
+        setTimeout(() => {
+          setVoiceStatus('🚀 开始生成脚本...', 'active');
+          document.getElementById('generateBtn').click();
+        }, 800);
+
+      } else if (result.status === 'ask') {
+        // ── 任务 16：追问场景 ─────────────────────────────────────
+        historyText = fullInput;   // 保留历史输入，下次拼接
+        isInAskMode = true;
+
+        voiceAskBox.textContent = `🤔 ${result.question}`;
+        voiceAskBox.style.display = 'block';
+        setVoiceStatus('请再次按麦克风回答追问', '');
+
+        // 重置 finalText，准备接收新一轮录音
+        finalText   = '';
+        interimText = '';
+        renderVoiceText();
+
+      } else {
+        setVoiceStatus(`⚠️ ${result.message || '解析失败，请重试'}`, 'error');
+      }
+    }
+
+    // ── 自动填表动画（任务 14） ──────────────────────────────────────
+    function fillForm(data) {
+      const fields = [
+        { id: 'theme',    value: data.theme },
+        { id: 'duration', value: data.duration },
+        { id: 'style',    value: data.style },
+      ];
+      fields.forEach(({ id, value }, idx) => {
+        if (!value) return;
+        setTimeout(() => {
+          const el = document.getElementById(id);
+          if (!el) return;
+          el.value = value;
+          // 触发 change 事件，保证 select 类控件同步
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          // 高亮动画
+          el.classList.remove('field-highlight');
+          void el.offsetWidth; // reflow 触发重新播放
+          el.classList.add('field-highlight');
+        }, idx * 200);
+      });
+    }
+
+    // ── 麦克风按钮交互（Push-to-Talk，任务 10-12） ───────────────────
+    async function onMicStart(e) {
+      e.preventDefault();
+      if (isRecording) return;
+
+      // 重置状态
+      if (!isInAskMode) {
+        finalText   = '';
+        interimText = '';
+        historyText = '';
+        voiceAskBox.style.display = 'none';
+        renderVoiceText();
+      } else {
+        // 追问模式下仅清空当前轮
+        finalText   = '';
+        interimText = '';
+        renderVoiceText();
+      }
+
+      setVoiceStatus('正在初始化麦克风...', 'active');
+      mediaRecorder = await getMicRecorder();
+      if (!mediaRecorder) return;
+
+      isRecording = true;
+      micBtn.classList.add('recording');
+      micBtn.disabled = false; // 保持可点击以便松开
+
+      startRecording(mediaRecorder);
+    }
+
+    function onMicStop(e) {
+      e.preventDefault();
+      if (!isRecording) return;
+      stopRecording(true);
+    }
+
+    // 鼠标事件
+    micBtn.addEventListener('mousedown', onMicStart);
+    micBtn.addEventListener('mouseup',   onMicStop);
+    micBtn.addEventListener('mouseleave', (e) => {
+      if (isRecording) onMicStop(e);
+    });
+
+    // 触摸事件（移动端）
+    micBtn.addEventListener('touchstart', onMicStart, { passive: false });
+    micBtn.addEventListener('touchend',   onMicStop,  { passive: false });
+    micBtn.addEventListener('touchcancel', (e) => {
+      if (isRecording) onMicStop(e);
+    });
+  </script>
+</body>
+</html>
+          
