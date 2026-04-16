@@ -99,6 +99,8 @@ def corpus_crawl():
         "msg":  f"爬取任务已提交，关键词='{keyword}'，最多爬取 {limit} 条，后台处理中...",
         "data": {"keyword": keyword, "style": style, "topic": topic, "limit": limit},
     })
+
+
 @corpus_bp.route("/api/corpus/stats", methods=["GET"])
 def corpus_stats():
     """查看语料库统计信息（总条数、各风格分布、各平台分布）"""
@@ -114,9 +116,7 @@ def corpus_stats():
         return jsonify({"code": 200, "msg": "查询成功", "data": stats})
     except Exception as e:
         return jsonify({"code": 500, "msg": f"查询失败: {e}"}), 500
-
-
-@corpus_bp.route("/api/corpus/list", methods=["GET"])
+        @corpus_bp.route("/api/corpus/list", methods=["GET"])
 def corpus_list():
     """
     分页查看语料库中的原始内容
@@ -183,9 +183,7 @@ def corpus_delete():
     if success:
         return jsonify({"code": 200, "msg": f"已删除 id={article_id}"})
     return jsonify({"code": 500, "msg": "删除失败，请检查 id 是否存在"}), 500
-
-
-@corpus_bp.route("/api/corpus/schedule", methods=["POST"])
+    @corpus_bp.route("/api/corpus/schedule", methods=["POST"])
 def corpus_schedule():
     """
     设置每日定时爬取关键词列表（持久化到 corpus/schedule.json）
