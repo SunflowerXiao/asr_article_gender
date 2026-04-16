@@ -2,9 +2,6 @@ import json
 import re
 
 from flask import Blueprint, Response, jsonify, request, stream_with_context
-from volcenginesdkarkruntime.types.responses.response_completed_event import ResponseCompletedEvent
-from volcenginesdkarkruntime.types.responses.response_text_delta_event import ResponseTextDeltaEvent
-from volcenginesdkarkruntime.types.responses.response_text_done_event import ResponseTextDoneEvent
 
 from config import ark_client
 from utils.auth import check_limit, require_auth
@@ -170,8 +167,6 @@ JSON 结构必须严格如下：
 - titles 必须是5个爆款标题，包含痛点/悬念/数字/反差等元素
 - tags 必须是5个热门标签，精准匹配主题，不含 # 符号
 - 整体风格必须符合{style}的特点""".strip()
-
-
 def _validate_generate_params(data: dict):
     """
     校验生成接口的请求参数。
@@ -194,18 +189,90 @@ def _validate_generate_params(data: dict):
 
 
 def _extract_token_usage(resp) -> dict:
+    """从 chat.completions 响应中提取 token 用量（prompt_tokens / completion_tokens）"""
     usage = getattr(resp, "usage", None)
+    input_tokens  = getattr(usage, "prompt_tokens",     0) if usage else 0
+    output_tokens = getattr(usage, "completion_tokens", 0) if usage else 0
     return {
-        "input_tokens":  getattr(usage, "input_tokens",  0) if usage else 0,
-        "output_tokens": getattr(usage, "output_tokens", 0) if usage else 0,
-        "total_tokens":  getattr(usage, "total_tokens",  0) if usage else 0,
+        "input_tokens":  input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens":  input_tokens + output_tokens,
     }
+
+
+def _build_messages(history: list, new_user_text: str) -> list:
+    """
+    将前端维护的 **结构化** 历史记录 + 本轮新消息转换为 API 所需的消息列表。
+
+    结构化历史条目格式（前端传入）：
+
+      用户消息 · 首轮（type="initial"）：
+        {"role": "user", "type": "initial",
+         "theme": "...", "duration": "...", "style": "..."}
+
+      用户消息 · 后续轮（type="refinement"）：
+        {"role": "user", "type": "refinement",
+         "feedback": "..."}
+
+      AI 回复（type="script"）：
+        {"role": "assistant", "type": "script",
+         "content": "<raw JSON string>",
+         "script": "...", "titles": [...], "tags": [...]}
+
+    基于结构化字段按需重建 API 文本：
+      - "initial"    → 仅携带主题/时长/风格，不重传完整 prompt（节省 token）
+      - "refinement" → 携带修改意见 + 格式要求
+      - fallback     → 直接使用 content 字段（兼容旧数据）
+
+    滑动窗口：最多保留最近 MAX_HISTORY_TURNS 轮（每轮 2 条消息）。
+    """
+    MAX_HISTORY_TURNS = 5
+
+    if not isinstance(history, list):
+        history = []
+    if len(history) > MAX_HISTORY_TURNS * 2:
+        history = history[-(MAX_HISTORY_TURNS * 2):]
+
+    messages = []
+    for msg in history:
+        role     = msg.get("role", "user")
+        msg_type = msg.get("type", "")
+
+        if role == "user":
+            if msg_type == "initial":
+                # 从结构化字段重建精简请求（无需重传千字 prompt）
+                t = msg.get("theme",    "")
+                d = msg.get("duration", "")
+                s = msg.get("style",    "")
+                text = f"请生成短视频脚本。\n主题：{t}\n时长：{d}\n风格：{s}"
+
+            elif msg_type == "refinement":
+                # 从结构化字段重建修改要求
+                fb   = msg.get("feedback", "")
+                text = (
+                    f"请根据以下反馈修改脚本：\n{fb}\n\n"
+                    f"要求：保持 JSON 格式，只返回修改后的完整 JSON 对象，不要有其他文字。"
+                )
+
+            else:
+                # 兼容旧格式：直接使用 content 字段
+                text = str(msg.get("content", ""))
+
+            messages.append({"role": "user", "content": text})
+
+        else:  # assistant / script
+            # 使用 content（原始 JSON 字符串），结构化字段仅供前端展示
+            content = str(msg.get("content", ""))
+            messages.append({"role": "assistant", "content": content})
+
+    # 追加本轮新消息
+    messages.append({"role": "user", "content": new_user_text})
+    return messages
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 路由
 # ══════════════════════════════════════════════════════════════════════════════
-
 @generate_bp.route("/api/generate", methods=["POST"])
 def generate():
     err = require_auth()
@@ -227,21 +294,20 @@ def generate():
     dynamic_examples = _build_dynamic_examples(theme, style)
     corpus_section   = f"\n{dynamic_examples}\n" if dynamic_examples else ""
     prompt           = _build_prompt(theme, duration, style, corpus_section)
-try:
-        resp = ark_client.responses.create(
+
+    try:
+        resp = ark_client.chat.completions.create(
             model="doubao-seed-2-0-pro-260215",
-            input=[{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
-            max_output_tokens=1024,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=1024,
         )
         token_usage = _extract_token_usage(resp)
         print(f"[TOKEN_USAGE] input: {token_usage['input_tokens']}, "
               f"output: {token_usage['output_tokens']}, total: {token_usage['total_tokens']}")
 
         content = ""
-        for item in resp.output:
-            if item.type == "message":
-                content = item.content[0].text
-                break
+        if resp.choices:
+            content = resp.choices[0].message.content or ""
 
         if not content:
             print("[ERROR] 模型返回内容为空")
@@ -273,9 +339,20 @@ try:
 
 @generate_bp.route("/api/generate/stream", methods=["POST"])
 def generate_stream():
-    """流式输出接口，使用 SSE (Server-Sent Events) 实现打字机效果"""
+    """
+    流式输出接口（SSE），支持多轮会话。
+
+    请求体新增字段：
+        history  : list  可选，前端维护的历史消息列表
+                         格式：[{"role": "user"/"assistant", "content": "string"}, ...]
+        feedback : str   可选，后续轮次用户的修改意见
+
+    响应新增字段（done 事件）：
+        full_text : str  本轮模型完整输出文本，前端存入 history 后传回下一轮
+    """
+    print('1111111111111111')
     err = require_auth()
-    if err:
+        if err:
         return err
 
     if not check_limit(request.remote_addr):
@@ -284,49 +361,81 @@ def generate_stream():
     data = request.get_json(silent=True)
     if not data:
         return jsonify({"code": 400, "msg": "请求格式错误，需要 JSON 格式请求体"})
-
+    
     try:
         theme, duration, style = _validate_generate_params(data)
     except ValueError as e:
         return jsonify({"code": 400, "msg": str(e)})
 
-    prompt = _build_prompt(theme, duration, style)
+    # ── 多轮会话参数 ──────────────────────────────────────────────────────────
+    history  = data.get("history",  []) or []
+    feedback = (data.get("feedback", "") or "").strip()
 
+    # 判断轮次：有历史记录且有反馈内容 → 后续轮次；否则 → 首轮
+    if history and feedback:
+        # 后续轮次：基于历史 + 用户反馈，无需重发完整 prompt
+        new_user_text = (
+            f"请根据以下反馈修改脚本：\n{feedback}\n\n"
+            f"要求：保持与之前相同的 JSON 格式，只返回修改后的完整 JSON 对象，不要有任何其他文字。"
+        )
+        messages = _build_messages(history, new_user_text)
+        print(f"[MULTI-TURN] 第 {len(history)//2 + 1} 轮 | feedback='{feedback[:30]}...' "
+              f"| history_turns={len(history)//2}")
+    else:
+        # 首轮：使用完整 prompt（含写作技巧、示例等）
+        prompt   = _build_prompt(theme, duration, style)
+        messages = [{"role": "user", "content": prompt}]
+        print(f"[FIRST-TURN] theme='{theme}' | duration={duration} | style={style}")
     def event_stream():
+        full_response = ""  # 累积完整响应，随 done 事件一并返回给前端
+        token_usage   = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
         try:
-            stream = ark_client.responses.create(
+            stream = ark_client.chat.completions.create(
                 model="doubao-seed-2-0-pro-260215",
-                input=[{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
-                max_output_tokens=1024,
+                messages=messages,
+                max_tokens=1024,
                 stream=True,
             )
+            for chunk in stream:
+                if not chunk.choices:
+                    # 最后一个 chunk 通常携带 usage（需开启 stream_options）
+                    usage_chunk = _extract_token_usage(chunk)
+                    if usage_chunk["total_tokens"]:
+                        token_usage = usage_chunk
+                    continue
 
-            for event in stream:
-                if isinstance(event, ResponseTextDeltaEvent):
-                    chunk = event.delta if hasattr(event, "delta") else ""
-                    if chunk:
-                        yield f"data: {json.dumps({'text': chunk}, ensure_ascii=False)}\n\n"
+                delta_content = chunk.choices[0].delta.content or ""
+                finish_reason = chunk.choices[0].finish_reason
 
-                elif isinstance(event, ResponseTextDoneEvent):
-                    print("[STREAM] 文本生成完成")
+                if delta_content:
+                    full_response += delta_content
+                    yield f"data: {json.dumps({'text': delta_content}, ensure_ascii=False)}\n\n"
 
-                elif isinstance(event, ResponseCompletedEvent):
-                    if hasattr(event, "response") and hasattr(event.response, "usage"):
-                        token_usage = _extract_token_usage(event.response)
-                        print(f"[TOKEN_USAGE] input: {token_usage['input_tokens']}, "
-                              f"output: {token_usage['output_tokens']}, total: {token_usage['total_tokens']}")
-                        cost   = log_token_usage(theme, duration, style, token_usage)
-                        alerts = check_and_alert(token_usage, cost, theme)
-                        print(f"[SUCCESS] 流式生成成功 | theme='{theme}' | "
-                              f"tokens: {token_usage['total_tokens']} | cost: ¥{cost:.4f}")
-                        if alerts:
-                            print(f"[WARNING] 触发 {len(alerts)} 条告警")
+                if finish_reason == "stop":
+                    # 部分 SDK 版本将 usage 附在最后一个有效 chunk 上
+                    usage_chunk = _extract_token_usage(chunk)
+                    if usage_chunk["total_tokens"]:
+                        token_usage = usage_chunk
 
-                    yield f"data: {json.dumps({'done': True}, ensure_ascii=False)}\n\n"
+            # 流结束后统一记录用量并发送 done 事件
+            if token_usage["total_tokens"]:
+                print(f"[TOKEN_USAGE] input: {token_usage['input_tokens']}, "
+                      f"output: {token_usage['output_tokens']}, total: {token_usage['total_tokens']}")
+                cost   = log_token_usage(theme, duration, style, token_usage)
+                alerts = check_and_alert(token_usage, cost, theme)
+                print(f"[SUCCESS] 流式生成成功 | theme='{theme}' | "
+                      f"tokens: {token_usage['total_tokens']} | cost: ¥{cost:.4f}")
+                if alerts:
+                    print(f"[WARNING] 触发 {len(alerts)} 条告警")
+            else:
+                print(f"[SUCCESS] 流式生成成功 | theme='{theme}'")
+
+            # done 事件携带 full_text，前端存入历史后传回下一轮
+            yield f"data: {json.dumps({'done': True, 'full_text': full_response}, ensure_ascii=False)}\n\n"
 
         except Exception as e:
             print(f"[ERROR] 流式生成失败: {e}")
             yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
-            yield f"data: {json.dumps({'done': True}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'done': True, 'full_text': ''}, ensure_ascii=False)}\n\n"
 
     return Response(stream_with_context(event_stream()), mimetype="text/event-stream")
