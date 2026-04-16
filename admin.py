@@ -1,10 +1,11 @@
 import logging
 import os
 
-from flask import Flask, send_from_directory
+from flask import Flask, send_from_directory, jsonify, render_template_string
 from flask_cors import CORS
 from flask_sock import Sock
 
+from config import AUTH_TOKEN
 from routes.generate import generate_bp
 from routes.corpus import corpus_bp
 from routes.voice import voice_bp
@@ -35,10 +36,19 @@ from routes.voice import register_ws_routes  # noqa: E402
 register_ws_routes(sock)
 
 
-# ── 首页 ──────────────────────────────────────────────────────────────────────
+# ── 首页（服务端渲染注入 Token，避免前端硬编码）───────────────────────────────
 @app.route("/")
 def index():
-    return send_from_directory(os.path.dirname(__file__), "index.html")
+    """
+    读取 index.html 并将占位符 __AUTH_TOKEN__ 替换为服务端环境变量中的真实 Token。
+    Token 通过后端渲染注入，不出现在静态文件中，防止密钥泄露。
+    """
+    html_path = os.path.join(os.path.dirname(__file__), "index.html")
+    with open(html_path, "r", encoding="utf-8") as f:
+        html_content = f.read()
+    # 将前端占位符替换为真实 Token（仅在服务端内存中完成，不修改磁盘文件）
+    html_content = html_content.replace("__AUTH_TOKEN__", AUTH_TOKEN)
+    return html_content, 200, {"Content-Type": "text/html; charset=utf-8"}
 
 
 if __name__ == "__main__":
