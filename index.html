@@ -210,6 +210,7 @@
     .voice-status.error {
       color: #ff4757;
     }
+
     .voice-text-box {
       width: 100%;
       min-height: 56px;
@@ -238,7 +239,7 @@
     .field-highlight {
       animation: highlight-fade 1.2s ease-out;
     }
-
+    
     @keyframes highlight-fade {
       0%   { background: #dce8ff; border-color: #5677fc; }
       100% { background: white;   border-color: #e5e6eb; }
@@ -305,65 +306,130 @@
   </div>
 
   <div class="card" id="resultCard" style="display: none;">
+
+    <!-- 顶部：标题 + 轮次徽章 -->
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <span style="font-size:13px; color:#999;">生成结果</span>
+      <span id="roundBadge" style="display:none; font-size:12px; color:#5677fc;
+            background:#eef1ff; padding:3px 10px; border-radius:10px; font-weight:600;">
+        第 1 轮
+      </span>
+    </div>
+
     <div id="loading" class="loading" style="display: none;">正在生成中，请稍候...</div>
     <div id="resultContent" class="result"></div>
     <button class="copy-btn" id="copyBtn">复制全部内容</button>
-  </div>
 
+    <!-- ── 多轮优化区域（生成完首轮后显示）────────────────────────── -->
+    <div id="feedbackSection" style="display:none; margin-top:18px;
+         border-top:1px solid #f0f0f0; padding-top:16px;">
+
+      <label style="display:block; margin-bottom:8px;
+             font-size:14px; font-weight:500; color:#333;">
+        💬 继续优化脚本
+      </label>
+
+      <textarea id="feedbackInput" rows="3"
+        placeholder="告诉 AI 需要调整的地方，例如：开头改得更有冲击力、标题换成搞笑风格、增加更多细节…"
+        style="width:100%; padding:10px 12px; border:1px solid #e5e6eb; border-radius:8px;
+               font-size:14px; outline:none; resize:vertical; font-family:inherit;
+               line-height:1.6;"></textarea>
+
+      <div style="display:flex; gap:8px; margin-top:10px;">
+        <button id="refineBtn"
+          style="flex:1; padding:11px; background:#5677fc; color:white; border:none;
+                 border-radius:8px; font-size:14px; font-weight:bold; cursor:pointer;">
+          ✨ 优化脚本
+        </button>
+        <button id="newChatBtn"
+          style="padding:11px 16px; background:#fff; color:#666;
+                 border:1px solid #e5e6eb; border-radius:8px; font-size:14px;
+                 cursor:pointer; white-space:nowrap;">
+          🔄 新对话
+        </button>
+      </div>
+
+      <!-- 上下文窗口状态提示 -->
+      <div id="historyTip"
+        style="margin-top:8px; font-size:12px; color:#bbb; text-align:center;"></div>
+    </div>
+
+  </div>
   <script>
-    const generateBtn = document.getElementById('generateBtn');
-    const resultCard = document.getElementById('resultCard');
-    const resultContent = document.getElementById('resultContent');
-    const loading = document.getElementById('loading');
-    const copyBtn = document.getElementById('copyBtn');
+    // ── DOM 引用 ────────────────────────────────────────────────────
+    const generateBtn    = document.getElementById('generateBtn');
+    const resultCard     = document.getElementById('resultCard');
+    const resultContent  = document.getElementById('resultContent');
+    const loading        = document.getElementById('loading');
+    const copyBtn        = document.getElementById('copyBtn');
+    const feedbackSection = document.getElementById('feedbackSection');
+    const feedbackInput  = document.getElementById('feedbackInput');
+    const refineBtn      = document.getElementById('refineBtn');
+    const newChatBtn     = document.getElementById('newChatBtn');
+    const roundBadge     = document.getElementById('roundBadge');
+    const historyTip     = document.getElementById('historyTip');
 
     let currentEventSource = null; // 用于管理 SSE 连接
 
-    generateBtn.addEventListener('click', async () => {
-      const theme = document.getElementById('theme').value.trim();
-      const duration = document.getElementById('duration').value;
-      const style = document.getElementById('style').value;
+    // ── 多轮会话状态 ─────────────────────────────────────────────────
+    //
+    // 结构化历史条目格式：
+    //
+    //   用户 · 首轮：
+    //     { role:"user", type:"initial", theme, duration, style }
+    //
+    //   用户 · 后续轮：
+    //     { role:"user", type:"refinement", feedback:"..." }
+    //
+    //   AI 回复：
+    //     { role:"assistant", type:"script",
+    //       content:"<raw JSON>",       ← 传给后端 API
+    //       script:"...", titles:[...], tags:[...] }  ← 供前端展示
+    //
+    let conversationHistory = [];    // 完整结构化历史
+    let conversationRound   = 0;     // 当前轮次计数
+    let currentUserEntry    = null;  // 本轮结构化用户条目，生成完成后写入历史
+    const MAX_HISTORY_TURNS = 5;     // 滑动窗口大小（轮）
 
-      if (!theme) {
-        alert('请输入视频主题');
-        return;
-      }
-
+    // ════════════════════════════════════════════════════════════════
+    // 公共流式请求函数
+    // ════════════════════════════════════════════════════════════════
+    async function doGenerateStream({ theme, duration, style, feedback, history, userEntry }) {
       // 关闭之前的 SSE 连接（如果有）
       if (currentEventSource) {
         currentEventSource.close();
         currentEventSource = null;
       }
 
-      resultCard.style.display = 'block';
-      resultContent.style.display = 'block';
-      loading.style.display = 'block';
-      resultContent.innerHTML = '<div class="streaming-text">正在生成中，请稍候...</div>';
-      generateBtn.disabled = true;
+      resultCard.style.display    = 'block';
+      loading.style.display       = 'block';
+      resultContent.innerHTML     = '<div class="streaming-text">正在生成中，请稍候...</div>';
+      generateBtn.disabled        = true;
+      refineBtn.disabled          = true;
 
-      // 使用流式输出接口
-      const apiUrl = 'http://127.0.0.1:5000/api/generate/stream';
+      const apiUrl = '/api/generate/stream';
 
       try {
-        // 使用 fetch + ReadableStream 接收 SSE 数据
         const response = await fetch(apiUrl, {
           method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            // 注意：如果需要鉴权，在这里添加 Authorization header
-            // 'Authorization': 'Bearer YOUR_TOKEN'
-          },
-          body: JSON.stringify({ theme, duration, style })
+          headers: { 'Content-Type': 'application/json','Authorization': 'Bearer __AUTH_TOKEN__' },
+          body: JSON.stringify({
+            theme,
+            duration,
+            style,
+            feedback: feedback || '',
+            history:  history  || [],
+          })
         });
 
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
         }
 
-        const reader = response.body.getReader();
+        const reader  = response.body.getReader();
         const decoder = new TextDecoder();
-        let buffer = '';
-        let fullText = '';
+        let buffer      = '';
+        let fullText    = '';   // 前端累积文本（最终以 full_text 字段为准）
         let isStreaming = true;
 
         loading.style.display = 'none';
@@ -371,57 +437,72 @@
 
         while (isStreaming) {
           const { done, value } = await reader.read();
-          
-          if (done) {
-            isStreaming = false;
-            break;
-          }
-          // 解码数据块
+          if (done) { isStreaming = false; break; }
+
           buffer += decoder.decode(value, { stream: true });
-          
-          // 解析 SSE 事件
           const lines = buffer.split('\n');
-          buffer = lines.pop() || ''; // 保留最后一个不完整的行
-          
+          buffer = lines.pop() || '';
+
           for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              try {
-                const data = JSON.parse(line.slice(6));
-                
-                // 检查是否完成
-                if (data.done) {
-                  isStreaming = false;
-                  break;
+            if (!line.startsWith('data: ')) continue;
+            try {
+              const data = JSON.parse(line.slice(6));
+
+              // ── 生成完成 ──────────────────────────────────────────
+              if (data.done) {
+                isStreaming = false;
+
+                // 以后端返回的 full_text 为最终文本（防止前端累积有遗漏）
+                if (data.full_text) fullText = data.full_text;
+
+                // ── 构造结构化 assistant 条目 ──────────────────────
+                // content 保留原始 JSON 字符串（后端 API 需要）
+                // script/titles/tags 解析出来供前端展示和摘要渲染
+                const assistantEntry = { role: 'assistant', type: 'script', content: fullText };
+                try {
+                  const parsed = JSON.parse(fullText);
+                  assistantEntry.script = parsed.script  || '';
+                  assistantEntry.titles = parsed.titles  || [];
+                  assistantEntry.tags   = parsed.tags    || [];
+                } catch (_) { /* 非 JSON，保持 content 即可 */ }
+
+                // ── 写入结构化历史 ──────────────────────────────────
+                conversationHistory.push(userEntry, assistantEntry);
+
+                // 滑动窗口：超出 MAX_HISTORY_TURNS 轮时丢弃最早的
+                if (conversationHistory.length > MAX_HISTORY_TURNS * 2) {
+                  conversationHistory = conversationHistory.slice(-(MAX_HISTORY_TURNS * 2));
                 }
-                
-                // 检查是否有错误
-                if (data.error) {
-                  resultContent.innerText = `生成失败：${data.error}`;
-                  isStreaming = false;
-                  break;
-                }
-                
-                // 累积文本
-                if (data.text) {
-                  fullText += data.text;
-                  // 尝试解析并格式化显示
-                  displayFormattedText(fullText);
-                }
-              } catch (e) {
-                // 忽略解析错误（可能是不完整的 JSON）
-                console.warn('SSE parse error:', e);
+
+                conversationRound++;
+                _updateRoundBadge();
+                _showFeedbackSection();
+                break;
               }
+              // ── 错误 ──────────────────────────────────────────────
+              if (data.error) {
+                resultContent.innerText = `生成失败：${data.error}`;
+                isStreaming = false;
+                break;
+              }
+
+              // ── 流式文字 ──────────────────────────────────────────
+              if (data.text) {
+                fullText += data.text;
+                _displayFormattedText(fullText);
+              }
+
+            } catch (e) {
+              console.warn('SSE parse error:', e);
             }
           }
         }
 
-        // 流式传输完成，移除光标动画
+        // 流式结束，移除光标动画，渲染最终格式化结果
         resultContent.classList.remove('streaming-text');
-        
-        // 尝试格式化最终结果
         try {
           const parsed = JSON.parse(fullText);
-          resultContent.innerText = formatStructuredResult(parsed);
+          resultContent.innerText = _formatStructuredResult(parsed);
         } catch (e) {
           resultContent.innerText = fullText;
         }
@@ -431,42 +512,165 @@
         resultContent.classList.remove('streaming-text');
       } finally {
         loading.style.display = 'none';
-        generateBtn.disabled = false;
+        generateBtn.disabled  = false;
+        refineBtn.disabled    = false;
       }
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // 首轮生成按钮
+    // ════════════════════════════════════════════════════════════════
+    generateBtn.addEventListener('click', async () => {
+      const theme    = document.getElementById('theme').value.trim();
+      const duration = document.getElementById('duration').value;
+      const style    = document.getElementById('style').value;
+
+      if (!theme) { alert('请输入视频主题'); return; }
+
+      // 首轮：重置所有会话状态
+      conversationHistory     = [];
+      conversationRound       = 0;
+      feedbackSection.style.display = 'none';
+      feedbackInput.value     = '';
+      roundBadge.style.display = 'none';
+      historyTip.innerHTML    = '';
+
+      // 首轮结构化用户条目（含语义字段，后端按 type="initial" 重建精简请求文本）
+      const userEntry = {
+        role: 'user', type: 'initial',
+        theme, duration, style,
+      };
+
+      await doGenerateStream({ theme, duration, style, feedback: '', history: [], userEntry });
     });
 
-    // 显示格式化文本
-    function displayFormattedText(text) {
+    // ════════════════════════════════════════════════════════════════
+    // 后续轮次：优化脚本按钮
+    // ════════════════════════════════════════════════════════════════
+    refineBtn.addEventListener('click', async () => {
+      const feedbackText = feedbackInput.value.trim();
+      if (!feedbackText) { alert('请输入需要调整的内容'); return; }
+
+      const theme    = document.getElementById('theme').value.trim();
+      const duration = document.getElementById('duration').value;
+      const style    = document.getElementById('style').value;
+
+      // 记录本轮结构化用户条目（后端按 type="refinement" 重建修改要求文本）
+      const userEntry = {
+        role: 'user', type: 'refinement',
+        feedback: feedbackText,
+      };
+      feedbackInput.value = '';
+
+      await doGenerateStream({
+        theme,
+        duration,
+        style,
+        feedback: feedbackText,
+        history:  conversationHistory,
+        userEntry,
+      });
+    });
+
+    // ════════════════════════════════════════════════════════════════
+    // 开启新对话按钮
+    // ════════════════════════════════════════════════════════════════
+    newChatBtn.addEventListener('click', () => {
+      conversationHistory           = [];
+      conversationRound             = 0;
+      feedbackSection.style.display = 'none';
+      resultCard.style.display      = 'none';
+      roundBadge.style.display      = 'none';
+      feedbackInput.value           = '';
+      historyTip.innerHTML          = '';
+      document.getElementById('theme').value = '';
+    });
+        // ════════════════════════════════════════════════════════════════
+    // 工具函数
+    // ════════════════════════════════════════════════════════════════
+
+    /** 更新顶部轮次徽章 + 底部上下文摘要面板（基于结构化历史渲染） */
+    function _updateRoundBadge() {
+      roundBadge.style.display = 'inline-block';
+      roundBadge.textContent   = `第 ${conversationRound} 轮`;
+
+      const turns     = conversationHistory.length / 2;
+      const remaining = Math.max(0, MAX_HISTORY_TURNS - turns);
+
+      // 逐轮生成摘要行（从结构化条目读取，不依赖原始 content 字符串）
+      const lines = [];
+      for (let i = 0; i < conversationHistory.length; i += 2) {
+        const u   = conversationHistory[i];        // user entry
+        const a   = conversationHistory[i + 1];    // assistant entry
+        const idx = i / 2 + 1;
+
+        let userSummary = '';
+        if (u.type === 'initial') {
+          userSummary = `📝 主题：${u.theme} · ${u.duration} · ${u.style}风格`;
+        } else if (u.type === 'refinement') {
+          const fb = u.feedback.length > 24 ? u.feedback.slice(0, 24) + '…' : u.feedback;
+          userSummary = `✏️ 修改：${fb}`;
+        }
+
+        // AI 回复摘要：取标题第一条（结构化字段，直接可读）
+        let aiSummary = '';
+        if (a && a.type === 'script' && a.titles && a.titles.length) {
+          const t = a.titles[0];
+          aiSummary = `→ ${t.length > 20 ? t.slice(0, 20) + '…' : t}`;
+        }
+
+        lines.push(`<div style="display:flex;gap:6px;align-items:baseline;line-height:1.9;">
+          <span style="color:#bbb;min-width:36px;">第${idx}轮</span>
+          <span style="color:#555;">${userSummary}</span>
+          ${aiSummary ? `<span style="color:#aaa;font-size:11px;">${aiSummary}</span>` : ''}
+        </div>`);
+      }
+
+      historyTip.innerHTML = `
+        <div style="margin-top:2px;padding:8px 10px;background:#f8f9ff;
+                    border-radius:6px;border:1px solid #eef;">
+          <div style="font-size:11px;color:#999;margin-bottom:4px;">
+            📋 AI 上下文窗口（${turns}/${MAX_HISTORY_TURNS} 轮
+            · 还可新增 ${remaining} 轮）
+          </div>
+          <div style="font-size:12px;">${lines.join('')}</div>
+        </div>`;
+    }
+
+    /** 生成完成后展示反馈区并聚焦 */
+    function _showFeedbackSection() {
+      feedbackSection.style.display = 'block';
+      feedbackInput.focus();
+    }
+
+    /** 流式阶段：尝试解析并实时渲染格式化结果 */
+    function _displayFormattedText(text) {
       try {
-        // 尝试解析完整 JSON
         const parsed = JSON.parse(text);
-        resultContent.innerText = formatStructuredResult(parsed);
+        resultContent.innerText = _formatStructuredResult(parsed);
       } catch (e) {
-        // JSON 不完整，显示等待信息
         resultContent.innerText = '正在生成脚本，请稍候...';
       }
     }
 
-    // 格式化结构化结果（JSON 解析后）
-    function formatStructuredResult(data) {
+    /** 将结构化 JSON 结果格式化为可读文本 */
+    function _formatStructuredResult(data) {
       let result = '';
-      
+
       if (data.script) {
         result += `【口播脚本】\n${data.script}\n\n`;
       }
-      
+
       if (data.titles && Array.isArray(data.titles)) {
         result += `【爆款标题】\n`;
-        data.titles.forEach((t, i) => {
-          result += `${i+1}. ${t}\n`;
-        });
+        data.titles.forEach((t, i) => { result += `${i + 1}. ${t}\n`; });
         result += '\n';
       }
-      
+
       if (data.tags && Array.isArray(data.tags)) {
         result += `【热门标签】\n${data.tags.join('、')}`;
       }
-      
+
       return result.trim();
     }
 
@@ -476,6 +680,7 @@
         alert('复制成功！');
       });
     });
+
     // ══════════════════════════════════════════════════════════════════
     // 语音输入功能（任务 11-16）
     // ══════════════════════════════════════════════════════════════════
@@ -484,8 +689,7 @@
     const voiceStatus   = document.getElementById('voiceStatus');
     const voiceTextBox  = document.getElementById('voiceTextBox');
     const voiceAskBox   = document.getElementById('voiceAskBox');
-
-    // WebSocket 协议根据当前页面协议自动选择
+        // WebSocket 协议根据当前页面协议自动选择
     const WS_PROTOCOL = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ASR_WS_URL  = `${WS_PROTOCOL}//${location.host}/ws/asr`;
 
@@ -565,6 +769,7 @@
           break;
         }
       }
+
       const options = chosenMime ? { mimeType: chosenMime } : {};
       try {
         return new MediaRecorder(stream, options);
@@ -594,8 +799,7 @@
       asrWs.onclose = () => {
         console.log('[ASR WS] 连接关闭');
       };
-
-      // ── 任务 13：接收识别文字并渲染 ─────────────────────────────
+            // ── 任务 13：接收识别文字并渲染 ─────────────────────────────
       asrWs.onmessage = (evt) => {
         let data;
         try {
@@ -664,6 +868,7 @@
         micStream = null;
       }
     }
+
     // ── 任务 14：识别结束后调用 /api/voice/parse 自动填表 ───────────
     async function triggerVoiceParse() {
       const fullInput = isInAskMode
@@ -723,7 +928,6 @@
         setVoiceStatus(`⚠️ ${result.message || '解析失败，请重试'}`, 'error');
       }
     }
-
     // ── 自动填表动画（任务 14） ──────────────────────────────────────
     function fillForm(data) {
       const fields = [
@@ -799,4 +1003,3 @@
   </script>
 </body>
 </html>
-          
